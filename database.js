@@ -22,22 +22,6 @@ function normalizeProductData(productData) {
   };
 }
 
-// Function to compute derived values safely
-function calculateDerivedValues(product) {
-  const p = normalizeProductData(product);
-  
-  const packingStyle = `${p.packing || 0} ${p.weightUnit || ''} X ${p.pcsPerCtn || 0} ${p.packingType || ''}`.trim();
-  const totalAmount = (Number(p.costPriceCTN) || 0) * (Number(p.noOfCtns) || 0);
-  
-  const pcs = Number(p.pcsPerCtn) || 0;
-  const cost = Number(p.costPriceCTN) || 0;
-  const shipping = Number(p.shippingCost) || 0;
-  const duty = Number(p.customDuty) || 0;
-  const costPerPiece = pcs > 0 ? (cost + shipping + duty) / pcs : 0;
-
-  return { ...p, packingStyle, totalAmount, costPerPiece };
-}
-
 // Initialize database with tables
 export async function initDatabase() {
   return new Promise((resolve, reject) => {
@@ -87,25 +71,55 @@ export async function initDatabase() {
   });
 }
 
-// Add Single Product Fix
+// Add a new product
 export async function addProduct(productData) {
-  const p = calculateDerivedValues(productData);
+  const {
+    brand,
+    productName,
+    barcode,
+    packing,
+    weightUnit,
+    packingType,
+    pcsPerCtn,
+    noOfCtns,
+    costPriceCTN,
+    shippingCost = 0,
+    customDuty = 0,
+    datePurchased
+  } = normalizeProductData(productData);
 
   return new Promise((resolve, reject) => {
+    const packingValue = Number(packing || 0);
+    const pcsPerCtnValue = Math.max(1, Number(pcsPerCtn || 1)); // Prevent division by zero or tiny values
+    const noOfCtnsValue = Number(noOfCtns || 0);
+    const costPriceValue = Number(costPriceCTN || 0);
+    const shippingValue = Number(shippingCost || 0);
+    const dutyValue = Number(customDuty || 0);
+    
+    // Calculations matching client Excel formulas exactly:
+    // TOTAL AMOUNT = SELLING RATE/CTN × No. of Ctns  (Column I × Column H)
+    // Price Per Piece = SELLING RATE/CTN / No. of Pcs/Ctn  (Column I / Column G)
+    const computedTotalAmount = costPriceValue * noOfCtnsValue;
+    const computedCostPerPiece = costPriceValue / pcsPerCtnValue;
+    
+    // Generates exact format: "84 GMS X 90 PKT" matching Column L in Excel
+    const packingStyleValue = `${packingValue} ${weightUnit || ''} X ${pcsPerCtnValue} ${packingType || ''}`.trim();
+
+    const query = `
+      INSERT INTO products
+      (brand, productName, barcode, packing, weightUnit, packingType, pcsPerCtn, noOfCtns, costPriceCTN, shippingCost, customDuty, totalAmount, costPerPiece, packingStyle, datePurchased)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+
     db.run(
-      `INSERT INTO products (
-        brand, productName, barcode, packing, weightUnit, packingType, 
-        pcsPerCtn, noOfCtns, costPriceCTN, shippingCost, customDuty, 
-        totalAmount, costPerPiece, packingStyle, datePurchased
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        p.brand, p.productName, p.barcode, p.packing, p.weightUnit, p.packingType,
-        p.pcsPerCtn, p.noOfCtns, p.costPriceCTN, p.shippingCost, p.customDuty,
-        p.totalAmount, p.costPerPiece, p.packingStyle, p.datePurchased
-      ],
-      function (err) {
-        if (err) reject(err);
-        else resolve({ id: this.lastID, ...p });
+      query,
+      [brand, productName, barcode, packingValue, weightUnit, packingType, pcsPerCtnValue, noOfCtnsValue, costPriceValue, shippingValue, dutyValue, computedTotalAmount, computedCostPerPiece, packingStyleValue, datePurchased],
+      function(err) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve({ id: this.lastID });
+        }
       }
     );
   });
@@ -276,34 +290,40 @@ export async function seedDropdownOptions() {
   }
 }
 
-// Bulk Insert Fix
+// Bulk insert products
 export async function bulkInsertProducts(productsArray) {
   return new Promise((resolve, reject) => {
     db.serialize(() => {
       db.run('BEGIN TRANSACTION');
-      
       const stmt = db.prepare(`
         INSERT INTO products (
-          brand, productName, barcode, packing, weightUnit, packingType, 
-          pcsPerCtn, noOfCtns, costPriceCTN, shippingCost, customDuty, 
+          brand, productName, barcode, packing, weightUnit, packingType,
+          pcsPerCtn, noOfCtns, costPriceCTN, shippingCost, customDuty,
           totalAmount, costPerPiece, packingStyle, datePurchased
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-
       try {
         let count = 0;
         for (const item of productsArray) {
-          const p = calculateDerivedValues(item);
+          const p = normalizeProductData(item);
+          const pcsVal = Math.max(1, Number(p.pcsPerCtn || 1));
+          const noOfCtnsVal = Number(p.noOfCtns || 0);
+          const costVal = Number(p.costPriceCTN || 0);
+          const shippingVal = Number(p.shippingCost || 0);
+          const dutyVal = Number(p.customDuty || 0);
+          const totalAmount = costVal * noOfCtnsVal;
+          const costPerPiece = costVal / pcsVal;
+          const packingStyle = `${p.packing || 0} ${p.weightUnit || ''} X ${pcsVal} ${p.packingType || ''}`.trim();
           stmt.run([
             p.brand, p.productName, p.barcode, p.packing, p.weightUnit, p.packingType,
-            p.pcsPerCtn, p.noOfCtns, p.costPriceCTN, p.shippingCost, p.customDuty,
-            p.totalAmount, p.costPerPiece, p.packingStyle, p.datePurchased
+            pcsVal, noOfCtnsVal, costVal, shippingVal, dutyVal,
+            totalAmount, costPerPiece, packingStyle, p.datePurchased
           ]);
           count++;
         }
         stmt.finalize();
         db.run('COMMIT', (err) => {
-          if (err) reject(err);
+          if (err) { db.run('ROLLBACK'); reject(err); }
           else resolve(count);
         });
       } catch (err) {

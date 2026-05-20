@@ -95,10 +95,9 @@ app.post('/api/import', async (req, res) => {
   }
 });
 
-// Update product fix in server.js
+// Update product
 app.put('/api/products/:id', async (req, res) => {
   try {
-    // database.js handles normalization internally on update
     await updateProduct(req.params.id, req.body);
     const updated = await getProductById(req.params.id);
     res.json({ success: true, data: updated });
