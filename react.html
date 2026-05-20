@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Price Tracker - React App</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+        #root { max-width: 1400px; margin: 0 auto; }
+        .container { background: white; border-radius: 12px; padding: 30px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); margin-bottom: 20px; }
+        .header { color: #333; margin-bottom: 25px; text-align: center; }
+        .header h1 { font-size: 2em; margin-bottom: 10px; }
+        .tabs { display: flex; gap: 10px; margin-bottom: 25px; border-bottom: 2px solid #eee; }
+        .tab { padding: 12px 20px; background: transparent; border: none; cursor: pointer; font-size: 1em; font-weight: 600; color: #999; border-bottom: 3px solid transparent; transition: all 0.3s ease; }
+        .tab.active { color: #667eea; border-bottom-color: #667eea; }
+        .tab:hover { color: #667eea; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; color: #333; font-weight: 600; }
+        .required::after { content: " *"; color: #e74c3c; }
+        .form-group input, .form-group select { width: 100%; padding: 10px; border: 2px solid #ddd; border-radius: 6px; font-size: 1em; transition: all 0.3s ease; }
+        .form-group input:focus, .form-group select:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102,126,234,0.1); }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .form-row-three { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; }
+        .auto-calc-box { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin: 20px 0; }
+        .auto-calc { background: #f0f4ff; border: 2px solid #667eea; border-radius: 6px; padding: 15px; }
+        .auto-calc .label { color: #667eea; font-weight: 600; font-size: 0.9em; margin-bottom: 8px; }
+        .auto-calc .value { font-size: 1.3em; color: #333; font-weight: bold; }
+        .button-group { display: flex; gap: 15px; margin-top: 25px; }
+        button { padding: 12px 24px; font-size: 1em; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.3s ease; }
+        .btn-primary { background: #667eea; color: white; flex: 1; }
+        .btn-primary:hover { background: #5568d3; transform: translateY(-2px); box-shadow: 0 5px 20px rgba(102,126,234,0.4); }
+        .btn-secondary { background: #95a5a6; color: white; flex: 1; }
+        .btn-secondary:hover { background: #7f8c8d; }
+        .table-responsive { overflow-x: auto; }
+        .results-table { width: 100%; border-collapse: collapse; margin-top: 25px; font-size: 0.95em; }
+        .results-table th { background: #667eea; color: white; padding: 12px; text-align: left; font-weight: 600; white-space: nowrap; }
+        .results-table td { padding: 10px 12px; border-bottom: 1px solid #eee; }
+        .results-table tr:hover { background: #f9f9f9; }
+        .alert { padding: 15px; border-radius: 6px; margin-bottom: 20px; display: none; }
+        .alert.show { display: block; }
+        .alert.success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .alert.error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .loading { text-align: center; color: #667eea; font-weight: 600; }
+        .no-results { text-align: center; color: #999; padding: 30px; font-style: italic; }
+    </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    function PriceTrackerApp() {
+        const [activeTab, setActiveTab] = useState('form');
+        const [formData, setFormData] = useState({
+            brand: '', productName: '', barcode: '', datePurchased: new Date().toISOString().split('T')[0],
+            packing: '', weightUnit: '', packingType: '', pcsPerCtn: '',
+            noOfCtns: '', costPriceCTN: '', shippingCost: '', customDuty: ''
+        });
+        const [products, setProducts] = useState([]);
+        const [searchResults, setSearchResults] = useState([]);
+        const [searchInput, setSearchInput] = useState('');
+        const [alert, setAlert] = useState({ type: '', message: '' });
+        const [loading, setLoading] = useState(false);
+        const [selectedIds, setSelectedIds] = useState([]);
+        const [confirmDialog, setConfirmDialog] = useState({ open: false, message: '', onConfirm: null });
+        const [editingProduct, setEditingProduct] = useState(null);
+        const [importModalOpen, setImportModalOpen] = useState(false);
+        const [excelHeaders, setExcelHeaders] = useState([]);
+        const [excelRows, setExcelRows] = useState([]);
+        const [columnMap, setColumnMap] = useState({});
+        const fileInputRef = useRef(null);
+        const lastSelectedIndex = useRef(null);
+        const API_BASE = '/api';
+
+        const showConfirm = (message, onConfirm) => setConfirmDialog({ open: true, message, onConfirm });
+        const closeConfirm = () => setConfirmDialog({ open: false, message: '', onConfirm: null });
+
+        const calculateTotalAmount = () => (Number(formData.costPriceCTN) || 0) * (Number(formData.noOfCtns) || 0);
+        const calculateCostPerPiece = () => (Number(formData.costPriceCTN) || 0) / Math.max(1, Number(formData.pcsPerCtn) || 1);
+        const generatePackingStyle = () => {
+            if (!formData.packing && !formData.pcsPerCtn) return '-';
+            return `${formData.packing || 0} ${formData.weightUnit || ''} X ${formData.pcsPerCtn || 0} ${formData.packingType || ''}`.trim();
+        };
+
+        const handleInputChange = (e) => {
+            const { name, value } = e.target;
+            setFormData(prev => ({ ...prev, [name]: value }));
+        };
+
+        const handleSubmit = async (e) => {
+            e.preventDefault();
+            const payload = {
+                brand: formData.brand, productName: formData.productName, barcode: formData.barcode,
+                packing: formData.packing, weightUnit: formData.weightUnit, packingType: formData.packingType,
+                pcsPerCtn: formData.pcsPerCtn, noOfCtns: formData.noOfCtns, costPriceCTN: formData.costPriceCTN,
+                shippingCost: formData.shippingCost || 0, customDuty: formData.customDuty || 0, datePurchased: formData.datePurchased
+            };
+            try {
+                const response = await fetch(`${API_BASE}/products`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const result = await response.json();
+                if (result.success) {
+                    setAlert({ type: 'success', message: 'Product added successfully!' });
+                    setFormData({ brand: '', productName: '', barcode: '', datePurchased: new Date().toISOString().split('T')[0], packing: '', weightUnit: '', packingType: '', pcsPerCtn: '', noOfCtns: '', costPriceCTN: '', shippingCost: '', customDuty: '' });
+                    loadAllProducts();
+                } else { setAlert({ type: 'error', message: `Error: ${result.error}` }); }
+            } catch (err) { setAlert({ type: 'error', message: `Error: ${err.message}` }); }
+            setTimeout(() => setAlert({ type: '', message: '' }), 5000);
+        };
+
+        const DB_FIELDS = [
+            { key: 'brand', label: 'Brand Name', required: true },
+            { key: 'productName', label: 'Product Name', required: true },
+            { key: 'barcode', label: 'Barcode', required: false },
+            { key: 'packing', label: 'Packing', required: false },
+            { key: 'weightUnit', label: 'Weight Unit', required: false },
+            { key: 'packingType', label: 'Packing Type', required: false },
+            { key: 'pcsPerCtn', label: 'Pcs / Ctn', required: false },
+            { key: 'noOfCtns', label: 'No. of Ctns', required: false },
+            { key: 'costPriceCTN', label: 'Cost Price / CTN', required: false },
+            { key: 'shippingCost', label: 'Shipping Cost', required: false },
+            { key: 'customDuty', label: 'Custom Duty', required: false },
+            { key: 'datePurchased', label: 'Date Purchased', required: false },
+        ];
+
+        const handleImportClick = () => { if (fileInputRef.current) { fileInputRef.current.value = ''; fileInputRef.current.click(); } };
+
+        const handleImportFile = (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (evt) => {
+                const workbook = XLSX.read(evt.target.result, { type: 'array' });
+                const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                let bestRows = [], bestHeaders = [];
+                for (let startRow = 0; startRow <= 5; startRow++) {
+                    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', range: startRow });
+                    if (!rows.length) continue;
+                    const hdrs = Object.keys(rows[0]).filter(h => !String(h).startsWith('__EMPTY') && String(h).trim() !== '');
+                    if (hdrs.length > bestHeaders.length) {
+                        bestHeaders = hdrs;
+                        bestRows = rows.map(r => { const c = {}; hdrs.forEach(h => { c[h] = r[h]; }); return c; })
+                            .filter(r => {
+                                const rowText = hdrs.map(h => String(r[h] || '').trim()).join(' ').toLowerCase();
+                                if (rowText.replace(/\s/g,'') === '') return false;
+                                if (rowText.includes('data will have') || rowText.includes('software will')) return false;
+                                return true;
+                            });
+                    }
+                }
+                if (!bestRows.length || !bestHeaders.length) { setAlert({ type: 'error', message: 'No valid data found in Excel.' }); setTimeout(() => setAlert({ type: '', message: '' }), 4000); return; }
+                const guess = {};
+                const normalize = s => String(s).toLowerCase().replace(/[^a-z]/g, '');
+                const guessMap = {
+                    brand: ['brandname','brand'],
+                    productName: ['productname','product','itemname','oductname','ductname'],
+                    barcode: ['barcode','ean','upc'],
+                    packing: ['packingsize','packsize','packing'],
+                    weightUnit: ['weightmeasuringunit','weightunit','measuringunit','weightmeasuring'],
+                    packingType: ['typeofpacking','packingtype','packtype'],
+                    pcsPerCtn: ['noofpcsctn','pcsperctn','pcspercarton','noofpcs','unitsperctn'],
+                    noOfCtns: ['noofctns','numberofctns','ctns','cartons','noofcartons'],
+                    costPriceCTN: ['sellingrate','costpricectn','costperctn','fob','sellingratectn'],
+                    shippingCost: ['shippingcost','shipping'],
+                    customDuty: ['customduty','duty','customtax'],
+                    datePurchased: ['datepurchased','date'],
+                };
+                bestHeaders.forEach(h => {
+                    const n = normalize(h);
+                    Object.entries(guessMap).forEach(([field, keywords]) => {
+                        if (!guess[field] && keywords.some(k => n.includes(k))) guess[field] = h;
+                    });
+                });
+                setExcelHeaders(bestHeaders);
+                setExcelRows(bestRows);
+                setColumnMap(guess);
+                setImportModalOpen(true);
+            };
+            reader.readAsArrayBuffer(file);
+        };
+
+        const handleImportConfirm = async () => {
+            if (!columnMap.brand || !columnMap.productName) { setAlert({ type: 'error', message: 'Brand Name and Product Name columns are required.' }); setTimeout(() => setAlert({ type: '', message: '' }), 4000); return; }
+            const productsArray = excelRows
+                .filter(row => {
+                    const b = String(row[columnMap.brand] || '').trim().toLowerCase();
+                    const p = String(row[columnMap.productName] || '').trim().toLowerCase();
+                    if (!b || !p) return false;
+                    if (b.includes('data will') || p.includes('data will')) return false;
+                    if (b === 'brand name' || p === 'product name') return false;
+                    return true;
+                })
+                .map(row => ({
+                    brand: String(row[columnMap.brand] || '').trim(),
+                    productName: String(row[columnMap.productName] || '').trim(),
+                    barcode: columnMap.barcode ? String(row[columnMap.barcode] || '').trim() : '',
+                    packing: Number(row[columnMap.packing]) || 0,
+                    weightUnit: columnMap.weightUnit ? String(row[columnMap.weightUnit] || '').trim() : '',
+                    packingType: columnMap.packingType ? String(row[columnMap.packingType] || '').trim() : '',
+                    pcsPerCtn: Number(row[columnMap.pcsPerCtn]) || 0,
+                    noOfCtns: Number(row[columnMap.noOfCtns]) || 0,
+                    costPriceCTN: Number(row[columnMap.costPriceCTN]) || 0,
+                    shippingCost: columnMap.shippingCost ? Number(row[columnMap.shippingCost]) || 0 : 0,
+                    customDuty: columnMap.customDuty ? Number(row[columnMap.customDuty]) || 0 : 0,
+                    datePurchased: columnMap.datePurchased ? String(row[columnMap.datePurchased] || '').trim() : '',
+                }));
+            if (!productsArray.length) { setAlert({ type: 'error', message: 'No valid rows found.' }); setTimeout(() => setAlert({ type: '', message: '' }), 4000); return; }
+            try {
+                const response = await fetch(`${API_BASE}/import`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(productsArray) });
+                const result = await response.json();
+                if (result.success) { setAlert({ type: 'success', message: `${result.count} product(s) imported successfully!` }); setImportModalOpen(false); loadAllProducts(); }
+                else { setAlert({ type: 'error', message: `Import failed: ${result.error}` }); }
+            } catch (err) { setAlert({ type: 'error', message: `Import error: ${err.message}` }); }
+            setTimeout(() => setAlert({ type: '', message: '' }), 5000);
+        };
+
+        const handleExportExcel = () => {
+            if (!products.length) { setAlert({ type: 'error', message: 'No data to export.' }); setTimeout(() => setAlert({ type: '', message: '' }), 3000); return; }
+            const exportData = products.map(p => ({
+                'Brand Name': p.brand, 'Product Name': p.productName, 'Barcode': p.barcode || '',
+                'Packing': p.packing, 'Weight Unit': p.weightUnit, 'Packing Type': p.packingType,
+                'Pcs/Ctn': p.pcsPerCtn, 'No. of Ctns': p.noOfCtns, 'Cost/CTN': p.costPriceCTN,
+                'Shipping Cost': p.shippingCost, 'Custom Duty': p.customDuty,
+                'Total Amount': p.totalAmount, 'Cost/Piece': p.costPerPiece,
+                'Packing Style': p.packingStyle, 'Date Purchased': p.datePurchased || '',
+            }));
+            const ws = XLSX.utils.json_to_sheet(exportData);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, 'Products');
+            XLSX.writeFile(wb, `price_tracker_export_${new Date().toISOString().split('T')[0]}.xlsx`);
+        };
+
+        const loadAllProducts = async () => {
+            try {
+                const response = await fetch(`${API_BASE}/products`);
+                const result = await response.json();
+                if (result.success) { setProducts(result.data); setSearchResults(result.data); }
+            } catch (err) { console.error('Error loading products:', err); }
+        };
+
+        const handleSearch = async () => {
+            if (!searchInput.trim()) { setSearchResults(products); return; }
+            setLoading(true);
+            try {
+                const response = await fetch(`${API_BASE}/products?q=${encodeURIComponent(searchInput)}`);
+                const result = await response.json();
+                if (result.success) setSearchResults(result.data);
+            } catch (err) { setAlert({ type: 'error', message: `Error: ${err.message}` }); setTimeout(() => setAlert({ type: '', message: '' }), 5000); }
+            finally { setLoading(false); }
+        };
+
+        const handleDeleteSingle = (id) => {
+            showConfirm('Delete this product?', async () => {
+                closeConfirm();
+                try {
+                    await fetch(`${API_BASE}/products/${id}`, { method: 'DELETE' });
+                    setAlert({ type: 'success', message: 'Product deleted.' });
+                    setSelectedIds(prev => prev.filter(sid => sid !== id));
+                    loadAllProducts();
+                } catch (err) { setAlert({ type: 'error', message: `Delete failed: ${err.message}` }); }
+                setTimeout(() => setAlert({ type: '', message: '' }), 4000);
+            });
+        };
+
+        const handleBulkDelete = () => {
+            if (selectedIds.length === 0) return;
+            showConfirm(`Delete ${selectedIds.length} selected product(s)?`, async () => {
+                closeConfirm();
+                try {
+                    await Promise.all(selectedIds.map(id => fetch(`${API_BASE}/products/${id}`, { method: 'DELETE' })));
+                    setAlert({ type: 'success', message: `${selectedIds.length} product(s) deleted.` });
+                    setSelectedIds([]);
+                    loadAllProducts();
+                } catch (err) { setAlert({ type: 'error', message: `Bulk delete failed: ${err.message}` }); }
+                setTimeout(() => setAlert({ type: '', message: '' }), 4000);
+            });
+        };
+
+        const toggleSelect = (id, index, e) => {
+            if (e.shiftKey && lastSelectedIndex.current !== null) {
+                const start = Math.min(lastSelectedIndex.current, index);
+                const end = Math.max(lastSelectedIndex.current, index);
+                const rangeIds = searchResults.slice(start, end + 1).map(p => p.id);
+                setSelectedIds(prev => [...new Set([...prev, ...rangeIds])]);
+            } else {
+                setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+                lastSelectedIndex.current = index;
+            }
+        };
+
+        const toggleSelectAll = () => {
+            if (selectedIds.length === searchResults.length) setSelectedIds([]);
+            else setSelectedIds(searchResults.map(p => p.id));
+        };
+
+        const handleEditOpen = (product) => setEditingProduct({ ...product });
+        const handleEditChange = (e) => { const { name, value } = e.target; setEditingProduct(prev => ({ ...prev, [name]: value })); };
+
+        const handleEditSave = async () => {
+            try {
+                const response = await fetch(`${API_BASE}/products/${editingProduct.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editingProduct) });
+                const result = await response.json();
+                if (result.success) {
+                    const updated = result.data;
+                    setSearchResults(prev => prev.map(p => p.id === updated.id ? updated : p));
+                    setProducts(prev => prev.map(p => p.id === updated.id ? updated : p));
+                    setAlert({ type: 'success', message: 'Product updated successfully.' });
+                    setEditingProduct(null);
+                } else { setAlert({ type: 'error', message: `Update failed: ${result.error}` }); }
+            } catch (err) { setAlert({ type: 'error', message: `Update failed: ${err.message}` }); }
+            setTimeout(() => setAlert({ type: '', message: '' }), 4000);
+        };
+
+        useEffect(() => { loadAllProducts(); }, []);
+
+        return (
+            <div>
+                <div className="container">
+                    <div className="header">
+                        <h1>📊 Price Tracker</h1>
+                    </div>
+                    <div className="tabs">
+                        <button className={`tab ${activeTab === 'form' ? 'active' : ''}`} onClick={() => setActiveTab('form')}>Add Product</button>
+                        <button className={`tab ${activeTab === 'search' ? 'active' : ''}`} onClick={() => setActiveTab('search')}>Search & Dynamic Grid</button>
+                    </div>
+
+                    {alert.message && <div className={`alert show ${alert.type}`}>{alert.message}</div>}
+
+                    {activeTab === 'form' && (
+                        <form onSubmit={handleSubmit}>
+                            <div className="form-row">
+                                <div className="form-group"><label className="required">Brand Name</label><input type="text" name="brand" placeholder="e.g., FRITOLAYS" value={formData.brand} onChange={handleInputChange} required /></div>
+                                <div className="form-group"><label className="required">Product Name</label><input type="text" name="productName" placeholder="e.g., LAYS CLASSIC" value={formData.productName} onChange={handleInputChange} required /></div>
+                            </div>
+                            <div className="form-row">
+                                <div className="form-group"><label>Barcode</label><input type="text" name="barcode" placeholder="Barcode" value={formData.barcode} onChange={handleInputChange} /></div>
+                                <div className="form-group"><label>Date Purchased</label><input type="date" name="datePurchased" value={formData.datePurchased} onChange={handleInputChange} /></div>
+                            </div>
+                            <div className="form-row-three">
+                                <div className="form-group"><label className="required">Packing</label><input type="number" name="packing" step="0.01" value={formData.packing} onChange={handleInputChange} required /></div>
+                                <div className="form-group">
+                                    <label className="required">Weight Measuring Unit</label>
+                                    <select name="weightUnit" value={formData.weightUnit} onChange={handleInputChange} required>
+                                        <option value="">Select Unit</option>
+                                        <option value="GMS">GMS</option>
+                                        <option value="GM">GM</option>
+                                        <option value="KG">KG</option>
+                                        <option value="LB'S">LB'S</option>
+                                        <option value="LTR">LTR</option>
+                                        <option value="ML">ML</option>
+                                    </select>
+                                </div>
+                                <div className="form-group">
+                                    <label className="required">Type of Packing</label>
+                                    <select name="packingType" value={formData.packingType} onChange={handleInputChange} required>
+                                        <option value="">Select Type</option>
+                                        <option value="CAN">CAN</option>
+                                        <option value="BTL">BTL</option>
+                                        <option value="BOTTLE">BOTTLE</option>
+                                        <option value="PKT">PKT</option>
+                                        <option value="TIN">TIN</option>
+                                        <option value="JAR">JAR</option>
+                                        <option value="BOX">BOX</option>
+                                        <option value="POUCHES">POUCHES</option>
+                                        <option value="TUBE">TUBE</option>
+                                        <option value="SACHET">SACHET</option>
+                                        <option value="PCS">PCS</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div className="form-row-three">
+                                <div className="form-group"><label className="required">No. of Pcs/ Ctn</label><input type="number" name="pcsPerCtn" step="0.01" value={formData.pcsPerCtn} onChange={handleInputChange} required /></div>
+                                <div className="form-group"><label className="required">No. of Ctns</label><input type="number" name="noOfCtns" step="0.01" value={formData.noOfCtns} onChange={handleInputChange} required /></div>
+                                <div className="form-group"><label className="required">Cost Price per CTN</label><input type="number" name="costPriceCTN" step="0.01" value={formData.costPriceCTN} onChange={handleInputChange} required /></div>
+                            </div>
+                            <div className="form-row">
+                                <div className="form-group"><label>Shipping Cost (per Ctn)</label><input type="number" name="shippingCost" step="0.01" value={formData.shippingCost} onChange={handleInputChange} /></div>
+                                <div className="form-group"><label>Custom Duty (per Ctn)</label><input type="number" name="customDuty" step="0.01" value={formData.customDuty} onChange={handleInputChange} /></div>
+                            </div>
+                            <div className="auto-calc-box">
+                                <div className="auto-calc"><div className="label">Generated Packing Style</div><div className="value" style={{ fontSize: '1.1em', color: '#764ba2' }}>{generatePackingStyle()}</div></div>
+                                <div className="auto-calc"><div className="label">Total Amount Calculated</div><div className="value">$ {calculateTotalAmount().toFixed(2)}</div></div>
+                                <div className="auto-calc"><div className="label">Cost Per Piece Calculated</div><div className="value">$ {calculateCostPerPiece().toFixed(4)}</div></div>
+                            </div>
+                            <div className="button-group">
+                                <button type="submit" className="btn-primary">Add Product</button>
+                                <button type="reset" className="btn-secondary" onClick={() => setFormData({ brand: '', productName: '', barcode: '', datePurchased: new Date().toISOString().split('T')[0], packing: '', weightUnit: '', packingType: '', pcsPerCtn: '', noOfCtns: '', costPriceCTN: '', shippingCost: '', customDuty: '' })}>Clear Input</button>
+                                <button type="button" className="btn-secondary" style={{ background: '#2980b9' }} onClick={handleImportClick}>Import Excel</button>
+                                <button type="button" className="btn-secondary" style={{ background: '#27ae60' }} onClick={handleExportExcel}>Export Excel</button>
+                            </div>
+                            <input type="file" accept=".xlsx" ref={fileInputRef} style={{ display: 'none' }} onChange={handleImportFile} />
+                        </form>
+                    )}
+
+                    {activeTab === 'search' && (
+                        <div>
+                            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '20px' }}>
+                                <input type="text" placeholder="Search by brand, product name or barcode..." value={searchInput}
+                                    onChange={(e) => { setSearchInput(e.target.value); if (e.target.value === '') loadAllProducts(); }}
+                                    onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+                                    style={{ flex: 1, padding: '10px 14px', border: '2px solid #ddd', borderRadius: '6px', fontSize: '1em' }} />
+                                <button onClick={handleSearch} style={{ whiteSpace: 'nowrap', background: '#667eea', color: 'white', border: 'none', padding: '10px 20px', borderRadius: '6px', cursor: 'pointer', fontWeight: '600' }}>Search</button>
+                                <button onClick={handleExportExcel} style={{ whiteSpace: 'nowrap', background: '#27ae60', color: 'white', border: 'none', padding: '10px 16px', borderRadius: '6px', cursor: 'pointer', fontWeight: '600' }}>Export Excel</button>
+                            </div>
+
+                            {selectedIds.length > 0 && (
+                                <div style={{ marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                    <span style={{ color: '#666', fontWeight: '600' }}>{selectedIds.length} selected</span>
+                                    <button onClick={handleBulkDelete} style={{ background: '#e74c3c', color: 'white', border: 'none', padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', fontWeight: '600' }}>Delete Selected</button>
+                                    <button onClick={() => setSelectedIds([])} style={{ background: '#95a5a6', color: 'white', border: 'none', padding: '8px 16px', borderRadius: '6px', cursor: 'pointer' }}>Clear Selection</button>
+                                </div>
+                            )}
+
+                            {loading && <div className="loading">Searching...</div>}
+                            {!loading && searchResults.length > 0 && (
+                                <div className="table-responsive">
+                                    <p style={{ marginBottom: '12px', color: '#666', fontWeight: 'bold' }}>Total Records: {searchResults.length}</p>
+                                    <table className="results-table">
+                                        <thead>
+                                            <tr>
+                                                <th style={{ width: '44px', textAlign: 'center' }}>
+                                                    {selectedIds.length > 0 && (
+                                                        <input type="checkbox" onChange={toggleSelectAll} checked={selectedIds.length === searchResults.length && searchResults.length > 0} style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: '#667eea' }} />
+                                                    )}
+                                                </th>
+                                                <th>Brand</th><th>Product Name</th><th>Barcode</th><th>Packing</th><th>Unit</th><th>Type</th><th>Pcs/Ctn</th><th>Ctns</th><th>Cost/CTN</th><th>Total</th><th>Cost/Piece</th><th>Packing Style</th><th>Date</th><th>Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {searchResults.map((p, index) => (
+                                                <tr key={p.id} style={{ background: selectedIds.includes(p.id) ? '#ddeeff' : '', transition: 'background 0.15s' }}>
+                                                    <td style={{ textAlign: 'center' }}>
+                                                        <input type="checkbox" checked={selectedIds.includes(p.id)} onClick={(e) => { e.stopPropagation(); toggleSelect(p.id, index, e); }} onChange={() => {}} style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: '#667eea' }} />
+                                                    </td>
+                                                    <td><strong>{p.brand}</strong></td><td>{p.productName}</td><td>{p.barcode || '-'}</td><td>{p.packing}</td><td>{p.weightUnit}</td><td>{p.packingType}</td><td>{p.pcsPerCtn}</td><td>{p.noOfCtns}</td><td>$ {Number(p.costPriceCTN || 0).toFixed(2)}</td><td>$ {Number(p.totalAmount || 0).toFixed(2)}</td><td><strong style={{ color: '#27ae60' }}>$ {Number(p.costPerPiece || 0).toFixed(4)}</strong></td><td style={{ fontStyle: 'italic', color: '#764ba2', fontWeight: '500' }}>{p.packingStyle}</td><td>{p.datePurchased || '-'}</td>
+                                                    <td style={{ whiteSpace: 'nowrap' }}>
+                                                        <button onClick={() => handleEditOpen(p)} style={{ background: '#3498db', color: 'white', border: 'none', padding: '5px 10px', borderRadius: '4px', cursor: 'pointer', marginRight: '6px', fontWeight: '600', fontSize: '0.85em' }}>Edit</button>
+                                                        <button onClick={() => handleDeleteSingle(p.id)} style={{ background: '#e74c3c', color: 'white', border: 'none', padding: '5px 10px', borderRadius: '4px', cursor: 'pointer', fontWeight: '600', fontSize: '0.85em' }}>Delete</button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                            {!loading && searchResults.length === 0 && (
+                                <div className="no-results">{searchInput ? 'No products found.' : 'No products in database. Add some above.'}</div>
+                            )}
+                        </div>
+                    )}
+
+                    {editingProduct && (() => {
+                        const ep = editingProduct;
+                        const editTotal = (Number(ep.costPriceCTN)||0) * (Number(ep.noOfCtns)||0);
+                        const editCPP = (Number(ep.costPriceCTN)||0) / Math.max(1, Number(ep.pcsPerCtn)||1);
+                        const editStyle = `${ep.packing||0} ${ep.weightUnit||''} X ${ep.pcsPerCtn||0} ${ep.packingType||''}`.trim();
+                        const iStyle = { width: '100%', padding: '8px 10px', border: '2px solid #ddd', borderRadius: '6px', fontSize: '1em', boxSizing: 'border-box' };
+                        const rStyle = { ...iStyle, background: '#f0f4ff', border: '2px solid #c5d0f0', color: '#555', cursor: 'not-allowed' };
+                        const lStyle = { display: 'block', fontWeight: '600', marginBottom: '5px', color: '#555' };
+                        const aStyle = { display: 'block', fontWeight: '600', marginBottom: '5px', color: '#888', fontSize: '0.9em' };
+                        return (
+                            <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                <div style={{ background: 'white', borderRadius: '12px', padding: '30px', width: '620px', maxWidth: '95vw', maxHeight: '90vh', overflowY: 'auto' }}>
+                                    <h2 style={{ marginBottom: '4px', color: '#333' }}>Edit Product</h2>
+                                    <p style={{ color: '#888', fontSize: '0.88em', marginBottom: '20px' }}>Auto-calculated fields update live.</p>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+                                        <div style={{ gridColumn: '1/-1' }}><label style={lStyle}>Brand</label><input type="text" name="brand" value={ep.brand||''} onChange={handleEditChange} style={iStyle} /></div>
+                                        <div style={{ gridColumn: '1/-1' }}><label style={lStyle}>Product Name</label><input type="text" name="productName" value={ep.productName||''} onChange={handleEditChange} style={iStyle} /></div>
+                                        <div><label style={lStyle}>Barcode</label><input type="text" name="barcode" value={ep.barcode||''} onChange={handleEditChange} style={iStyle} /></div>
+                                        <div><label style={lStyle}>Date Purchased</label><input type="date" name="datePurchased" value={ep.datePurchased||''} onChange={handleEditChange} style={iStyle} /></div>
+                                        <div><label style={lStyle}>Packing</label><input type="number" name="packing" step="0.01" value={ep.packing||''} onChange={handleEditChange} style={iStyle} /></div>
+                                        <div><label style={lStyle}>Weight Unit</label>
+                                            <select name="weightUnit" value={ep.weightUnit||''} onChange={handleEditChange} style={iStyle}>
+                                                <option value="">Select Unit</option>
+                                                <option value="GMS">GMS</option><option value="GM">GM</option>
+                                                <option value="KG">KG</option><option value="LB'S">LB'S</option>
+                                                <option value="LTR">LTR</option><option value="ML">ML</option>
+                                            </select>
+                                        </div>
+                                        <div><label style={lStyle}>Packing Type</label>
+                                            <select name="packingType" value={ep.packingType||''} onChange={handleEditChange} style={iStyle}>
+                                                <option value="">Select Type</option>
+                                                <option value="CAN">CAN</option><option value="BTL">BTL</option>
+                                                <option value="BOTTLE">BOTTLE</option><option value="PKT">PKT</option>
+                                                <option value="TIN">TIN</option><option value="JAR">JAR</option>
+                                                <option value="BOX">BOX</option><option value="POUCHES">POUCHES</option>
+                                                <option value="TUBE">TUBE</option><option value="SACHET">SACHET</option>
+                                                <option value="PCS">PCS</option>
+                                            </select>
+                                        </div>
+                                        <div><label style={lStyle}>Pcs / Ctn</label><input type="number" name="pcsPerCtn" step="1" value={ep.pcsPerCtn||''} onChange={handleEditChange} style={iStyle} /></div>
+                                        <div><label style={lStyle}>No. of Ctns</label><input type="number" name="noOfCtns" step="1" value={ep.noOfCtns||''} onChange={handleEditChange} style={iStyle} /></div>
+                                        <div><label style={lStyle}>Cost Price / CTN</label><input type="number" name="costPriceCTN" step="0.01" value={ep.costPriceCTN||''} onChange={handleEditChange} style={iStyle} /></div>
+                                        <div><label style={lStyle}>Shipping Cost</label><input type="number" name="shippingCost" step="0.01" value={ep.shippingCost ?? 0} onChange={handleEditChange} style={iStyle} /></div>
+                                        <div><label style={lStyle}>Custom Duty</label><input type="number" name="customDuty" step="0.01" value={ep.customDuty ?? 0} onChange={handleEditChange} style={iStyle} /></div>
+                                    </div>
+                                    <div style={{ marginTop: '18px', padding: '14px', background: '#f8f9ff', borderRadius: '8px', border: '1px solid #e0e4f0' }}>
+                                        <p style={{ margin: '0 0 10px', fontWeight: '700', color: '#667eea', fontSize: '0.9em' }}>AUTO-CALCULATED (read only)</p>
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
+                                            <div><label style={aStyle}>Total Amount</label><input readOnly value={`$ ${editTotal.toFixed(2)}`} style={rStyle} /></div>
+                                            <div><label style={aStyle}>Cost Per Piece</label><input readOnly value={`$ ${editCPP.toFixed(4)}`} style={rStyle} /></div>
+                                            <div><label style={aStyle}>Packing Style</label><input readOnly value={editStyle} style={rStyle} /></div>
+                                        </div>
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '12px', marginTop: '20px' }}>
+                                        <button onClick={handleEditSave} style={{ flex: 1, background: '#667eea', color: 'white', border: 'none', padding: '12px', borderRadius: '6px', cursor: 'pointer', fontWeight: '600', fontSize: '1em' }}>Save Changes</button>
+                                        <button onClick={() => setEditingProduct(null)} style={{ flex: 1, background: '#95a5a6', color: 'white', border: 'none', padding: '12px', borderRadius: '6px', cursor: 'pointer', fontWeight: '600', fontSize: '1em' }}>Cancel</button>
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })()}
+
+                    {importModalOpen && (
+                        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.55)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <div style={{ background: 'white', borderRadius: '12px', padding: '30px', width: '560px', maxWidth: '95vw', maxHeight: '88vh', overflowY: 'auto' }}>
+                                <h2 style={{ marginBottom: '6px', color: '#333' }}>Map Excel Columns</h2>
+                                <p style={{ color: '#888', fontSize: '0.92em', marginBottom: '22px' }}><strong>{excelRows.length}</strong> rows detected. Match each field to your Excel column.</p>
+                                {DB_FIELDS.map(field => (
+                                    <div key={field.key} style={{ display: 'flex', alignItems: 'center', marginBottom: '12px', gap: '12px' }}>
+                                        <label style={{ width: '160px', fontWeight: '600', color: '#555', fontSize: '0.95em', flexShrink: 0 }}>
+                                            {field.label}{field.required && <span style={{ color: '#e74c3c' }}> *</span>}
+                                        </label>
+                                        <select value={columnMap[field.key] || ''} onChange={(e) => setColumnMap(prev => ({ ...prev, [field.key]: e.target.value }))}
+                                            style={{ flex: 1, padding: '8px 10px', border: `2px solid ${field.required && !columnMap[field.key] ? '#e74c3c' : '#ddd'}`, borderRadius: '6px', fontSize: '0.95em' }}>
+                                            <option value="">— Skip this field —</option>
+                                            {excelHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                                        </select>
+                                    </div>
+                                ))}
+                                <div style={{ background: '#f8f9fa', borderRadius: '8px', padding: '12px', marginTop: '16px', marginBottom: '20px' }}>
+                                    <p style={{ margin: 0, color: '#666', fontSize: '0.88em' }}>
+                                        <strong>Preview:</strong>{' '}
+                                        {(() => {
+                                            const firstReal = excelRows.find(r => columnMap.brand && String(r[columnMap.brand]||'').trim() !== '' && !String(r[columnMap.brand]||'').toLowerCase().includes('data will'));
+                                            if (!firstReal) return 'Select Brand column to preview';
+                                            return Object.entries(columnMap).filter(([,v])=>v).slice(0,4).map(([k,v])=>`${k}: "${firstReal[v]}"`).join(' | ');
+                                        })()}
+                                    </p>
+                                </div>
+                                <div style={{ display: 'flex', gap: '12px' }}>
+                                    <button onClick={handleImportConfirm} style={{ flex: 1, background: '#667eea', color: 'white', border: 'none', padding: '12px', borderRadius: '6px', cursor: 'pointer', fontWeight: '600', fontSize: '1em' }}>Import {excelRows.length} Rows</button>
+                                    <button onClick={() => setImportModalOpen(false)} style={{ flex: 1, background: '#95a5a6', color: 'white', border: 'none', padding: '12px', borderRadius: '6px', cursor: 'pointer', fontWeight: '600', fontSize: '1em' }}>Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {confirmDialog.open && (
+                        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.45)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <div style={{ background: 'white', borderRadius: '12px', padding: '32px 36px', width: '380px', maxWidth: '90vw', boxShadow: '0 20px 60px rgba(0,0,0,0.2)', textAlign: 'center' }}>
+                                <div style={{ width: '48px', height: '48px', background: '#fff0f0', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', fontSize: '22px' }}>🗑️</div>
+                                <h3 style={{ margin: '0 0 8px', color: '#222', fontSize: '1.1em', fontWeight: '700' }}>Confirm Delete</h3>
+                                <p style={{ margin: '0 0 24px', color: '#666', fontSize: '0.95em', lineHeight: '1.5' }}>{confirmDialog.message}</p>
+                                <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+                                    <button onClick={closeConfirm} style={{ padding: '10px 28px', borderRadius: '6px', border: '2px solid #ddd', background: 'white', color: '#555', fontWeight: '600', cursor: 'pointer', fontSize: '0.95em' }}>Cancel</button>
+                                    <button onClick={confirmDialog.onConfirm} style={{ padding: '10px 28px', borderRadius: '6px', border: 'none', background: '#e74c3c', color: 'white', fontWeight: '600', cursor: 'pointer', fontSize: '0.95em' }}>Delete</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        );
+    }
+
+    ReactDOM.render(<PriceTrackerApp />, document.getElementById('root'));
+</script>
+</body>
+</html>
